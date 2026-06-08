@@ -18,12 +18,20 @@ def classification_metrics(y_true, y_pred):
     y_pred = np.asarray(y_pred)
     acc = float(np.mean(y_true == y_pred)) if len(y_true) else 0.0
     recalls = []
+    f1_values = []
     for label in sorted(set(y_true.tolist())):
         mask = y_true == label
-        recalls.append(float(np.mean(y_pred[mask] == label)) if np.any(mask) else 0.0)
+        true_positive = float(np.sum((y_true == label) & (y_pred == label)))
+        false_positive = float(np.sum((y_true != label) & (y_pred == label)))
+        false_negative = float(np.sum((y_true == label) & (y_pred != label)))
+        recalls.append(true_positive / max(1.0, true_positive + false_negative))
+        precision = true_positive / max(1.0, true_positive + false_positive)
+        recall = true_positive / max(1.0, true_positive + false_negative)
+        f1_values.append(2 * precision * recall / max(1e-12, precision + recall))
     return {
         "accuracy": acc,
         "balanced_accuracy": float(np.mean(recalls)) if recalls else 0.0,
+        "macro_f1": float(np.mean(f1_values)) if f1_values else 0.0,
     }
 
 

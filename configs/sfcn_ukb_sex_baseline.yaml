@@ -18,7 +18,7 @@ num_folds: 5
 batch_size: 1
 epochs: 0
 lr: 0.00001
-lr_backbone: 0.000001
+lr_backbone: 0.00001
 weight_decay: 0
 dropout: true
 data_augment: false

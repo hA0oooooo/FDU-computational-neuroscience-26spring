@@ -1,3 +1,9 @@
 dataset/
+
 models/
 outputs/
+.ckpt
+.pth
+
+__pycache__/
+*.pyc

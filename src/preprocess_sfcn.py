@@ -31,6 +31,11 @@ from src.preprocess_common import (
 
 SFCN_PROCESSED_DIR = PROJECT_ROOT / "dataset" / "processed_sfcn" / "UKB"
 SFCN_IMAGES_DIR = SFCN_PROCESSED_DIR / "images"
+SFCN_ADNI_PROCESSED_DIR = PROJECT_ROOT / "dataset" / "processed_sfcn" / "ADNI"
+ADNI_RAW_CANDIDATES = [
+    PROJECT_ROOT / "dataset" / "ADNI_data_105cases",
+    PROJECT_ROOT / "dataset" / "ADNI_data",
+]
 SFCN_TARGET_SHAPE = (160, 192, 160)
 SFCN_NUM_WORKERS = 16
 SFCN_NORMALIZATION_SOURCE = "UKBiobank_deep_pretrain/examples.ipynb"
@@ -40,6 +45,7 @@ STANDARD_MNI_NAMES = {
     "T1_brain_to_MNI.nii.gz",
     "T1_unbiased_brain_linearto_MNI.nii.gz",
 }
+ADNI_LABELS = {"CN", "MCI", "AD"}
 
 
 def fail_status(reason):
@@ -98,6 +104,40 @@ def find_existing_mni_file(case_dir):
         if name in by_name:
             return by_name[name]
     return None
+
+
+def find_adni_raw_dir():
+    for raw_dir in ADNI_RAW_CANDIDATES:
+        if raw_dir.exists():
+            return raw_dir
+    raise FileNotFoundError("Missing ADNI directory. Extract dataset/ADNI_data_105cases.tar.gz first.")
+
+
+def find_adni_csv(raw_dir):
+    csv_files = sorted(Path(raw_dir).glob("*.csv"))
+    if not csv_files:
+        raise FileNotFoundError(f"No CSV found under {raw_dir}")
+    return csv_files[0]
+
+
+def pick_adni_label_column(columns, rows):
+    try:
+        return pick_column(columns, ["label", "diagnosis", "dx", "group", "class"])
+    except ValueError:
+        for column in columns:
+            values = {str(row[column]).strip().upper() for row in rows if str(row[column]).strip()}
+            if values and values <= (ADNI_LABELS | {"DEMENTIA"}):
+                return column
+    raise ValueError(f"Could not infer ADNI label column from CSV columns: {columns}")
+
+
+def normalize_adni_label(value):
+    text = str(value).strip().upper()
+    if text == "DEMENTIA":
+        return "AD"
+    if text in ADNI_LABELS:
+        return text
+    raise ValueError(f"Unsupported ADNI label: {value}")
 
 
 def run_command(cmd, env):
@@ -223,7 +263,7 @@ def final_detail_values(path):
     }
 
 
-def preprocess_case(case_dir, row, age_col, sex_col, fsl, images_dir=SFCN_IMAGES_DIR):
+def preprocess_case(case_dir, row, age_col, sex_col, fsl, images_dir=SFCN_IMAGES_DIR, label_col=None):
     case_id = clean_value(case_dir.name)
     output_path = Path(images_dir) / f"{case_id}.nii.gz"
     details = {
@@ -319,15 +359,20 @@ def preprocess_case(case_dir, row, age_col, sex_col, fsl, images_dir=SFCN_IMAGES
     if tuple(image_shape(output_path)) != SFCN_TARGET_SHAPE:
         raise RuntimeError(f"final shape is {image_shape(output_path)}, expected {SFCN_TARGET_SHAPE}")
     details["status"] = "success"
-    return (
-        {
+    if label_col:
+        metadata = {
+            "ID": case_id,
+            "image_path": str(output_path.relative_to(PROJECT_ROOT)),
+            "label": normalize_adni_label(row[label_col]) if row is not None else "",
+        }
+    else:
+        metadata = {
             "ID": case_id,
             "image_path": str(output_path.relative_to(PROJECT_ROOT)),
             "Age": clean_value(row[age_col]) if row is not None and age_col else "",
             "Sex": clean_value(row[sex_col]) if row is not None and sex_col else "",
-        },
-        details,
-    )
+        }
+    return metadata, details
 
 
 def preprocess_case_worker(payload):
@@ -337,9 +382,17 @@ def preprocess_case_worker(payload):
     row = payload["row"]
     age_col = payload["age_col"]
     sex_col = payload["sex_col"]
+    label_col = payload.get("label_col")
     require_labels = bool(payload.get("require_labels", True))
 
     def failed_metadata(reason):
+        if label_col:
+            return {
+                "ID": case_id,
+                "image_path": "",
+                "label": normalize_adni_label(row[label_col]) if row is not None else "",
+                "preprocessing_status": f"fail: {fail_status(reason)}",
+            }
         return {
             "ID": case_id,
             "image_path": "",
@@ -362,6 +415,7 @@ def preprocess_case_worker(payload):
             sex_col,
             payload["fsl"],
             Path(payload["images_dir"]),
+            label_col=label_col,
         )
         metadata_row["preprocessing_status"] = "success"
         return {"metadata": metadata_row, "details": details_row}
@@ -398,7 +452,7 @@ def fsl_context():
     return {"flirt": str(flirt), "bet": str(bet), "mni": str(mni), "env": env}
 
 
-def build_sfcn_metadata(raw_dir, processed_dir, require_labels=True):
+def build_sfcn_metadata(raw_dir, processed_dir, require_labels=True, dataset_name="UKB", label_task=False):
     if not (PROJECT_ROOT / "UKBiobank_deep_pretrain").exists():
         raise FileNotFoundError(
             "Missing UKBiobank_deep_pretrain/. Please run:\n"
@@ -415,12 +469,15 @@ def build_sfcn_metadata(raw_dir, processed_dir, require_labels=True):
     row_by_id = {}
     age_col = None
     sex_col = None
+    label_col = None
     csv_files = sorted(raw_dir.glob("*.csv"))
     if csv_files:
         csv_path = csv_files[0]
         columns, rows = read_csv_rows(csv_path)
         id_col = pick_column(columns, ["ID", "eid", "caseid", "case_id", "subject"])
-        if require_labels:
+        if label_task:
+            label_col = pick_adni_label_column(columns, rows)
+        elif require_labels:
             age_col = pick_column(columns, ["Age", "age"])
             sex_col = pick_column(columns, ["Sex", "sex", "gender"])
         else:
@@ -437,7 +494,7 @@ def build_sfcn_metadata(raw_dir, processed_dir, require_labels=True):
         raise FileNotFoundError(f"No CSV found under {raw_dir}")
     dirs = case_dirs(raw_dir)
 
-    print("UKB SFCN preprocessing")
+    print(f"{dataset_name} SFCN preprocessing")
     print(f"Raw data: {path_text(raw_dir)}")
     if csv_path:
         print(f"CSV: {path_text(csv_path)}")
@@ -453,6 +510,7 @@ def build_sfcn_metadata(raw_dir, processed_dir, require_labels=True):
             "row": row_by_id.get(clean_value(case_dir.name)),
             "age_col": age_col,
             "sex_col": sex_col,
+            "label_col": label_col,
             "fsl": fsl,
             "images_dir": str(images_dir),
             "require_labels": require_labels,
@@ -465,14 +523,14 @@ def build_sfcn_metadata(raw_dir, processed_dir, require_labels=True):
     details_rows = []
     if SFCN_NUM_WORKERS == 1:
         iterator = (preprocess_case_worker(task) for task in tasks)
-        for result in tqdm(iterator, total=len(tasks), desc="Preprocessing SFCN UKB", unit="case"):
+        for result in tqdm(iterator, total=len(tasks), desc=f"Preprocessing SFCN {dataset_name}", unit="case"):
             if result["metadata"] is not None:
                 metadata.append(result["metadata"])
             details_rows.append(result["details"])
     else:
         with ProcessPoolExecutor(max_workers=int(SFCN_NUM_WORKERS)) as executor:
             futures = [executor.submit(preprocess_case_worker, task) for task in tasks]
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Preprocessing SFCN UKB", unit="case"):
+            for future in tqdm(as_completed(futures), total=len(futures), desc=f"Preprocessing SFCN {dataset_name}", unit="case"):
                 result = future.result()
                 if result["metadata"] is not None:
                     metadata.append(result["metadata"])
@@ -481,11 +539,8 @@ def build_sfcn_metadata(raw_dir, processed_dir, require_labels=True):
     metadata = sorted(metadata, key=lambda row: row["ID"])
     details_rows = sorted(details_rows, key=lambda row: row.get("ID", ""))
 
-    metadata_csv = write_csv(
-        processed_dir / "metadata.csv",
-        metadata,
-        ["ID", "image_path", "Age", "Sex", "preprocessing_status"],
-    )
+    metadata_fields = ["ID", "image_path", "label", "preprocessing_status"] if label_task else ["ID", "image_path", "Age", "Sex", "preprocessing_status"]
+    metadata_csv = write_csv(processed_dir / "metadata.csv", metadata, metadata_fields)
     details_csv = write_csv(
         processed_dir / "details.csv",
         details_rows,
@@ -520,11 +575,12 @@ def build_sfcn_metadata(raw_dir, processed_dir, require_labels=True):
     )
     successful = [row for row in metadata if row.get("image_path")]
     failed = [row for row in metadata if not row.get("image_path")]
-    ages = [float(row["Age"]) for row in successful if row.get("Age") not in {"", None}]
-    sex_counts = Counter(row["Sex"] for row in successful)
+    ages = [float(row["Age"]) for row in successful if row.get("Age") not in {"", None}] if not label_task else []
+    sex_counts = Counter(row["Sex"] for row in successful) if not label_task else Counter()
+    label_counts = Counter(row["label"] for row in successful) if label_task else Counter()
     shape_counts = Counter(row["final_shape"] for row in details_rows if row.get("status") == "success")
 
-    print("\nUKB SFCN preprocessing summary")
+    print(f"\n{dataset_name} SFCN preprocessing summary")
     print(f"SFCN official normalization source file: {SFCN_NORMALIZATION_SOURCE}")
     print(f"normalization_method: {SFCN_NORMALIZATION_METHOD}")
     print(f"processed image count: {len(successful)}")
@@ -534,7 +590,10 @@ def build_sfcn_metadata(raw_dir, processed_dir, require_labels=True):
     print("final shape statistics:", dict(shape_counts))
     if ages:
         print(f"Age range: min={min(ages):.1f}, max={max(ages):.1f}, mean={sum(ages) / len(ages):.2f}")
-    print("Sex distribution:", dict(sex_counts))
+    if label_task:
+        print("Label distribution:", dict(label_counts))
+    else:
+        print("Sex distribution:", dict(sex_counts))
 
     if successful:
         first_id = successful[0]["ID"]
@@ -560,4 +619,8 @@ def build_sfcn_metadata(raw_dir, processed_dir, require_labels=True):
 
 
 def build_ukb_sfcn_metadata():
-    return build_sfcn_metadata(UKB_RAW_DIR, SFCN_PROCESSED_DIR, require_labels=True)
+    return build_sfcn_metadata(UKB_RAW_DIR, SFCN_PROCESSED_DIR, require_labels=True, dataset_name="UKB", label_task=False)
+
+
+def build_adni_sfcn_metadata():
+    return build_sfcn_metadata(find_adni_raw_dir(), SFCN_ADNI_PROCESSED_DIR, require_labels=True, dataset_name="ADNI", label_task=True)

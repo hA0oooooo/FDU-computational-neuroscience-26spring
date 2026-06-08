@@ -1,0 +1,30 @@
+experiment_name: brainiac_adni_sklearn_frozen
+dataset: adni
+model: brainiac
+trainer: sklearn
+task: label
+mode: frozen
+feature_source: frozen
+
+processed_dir: dataset/processed_brainiac/ADNI
+metadata_csv: dataset/processed_brainiac/ADNI/metadata.csv
+features_dir: dataset/processed_brainiac/ADNI/features
+brainiac_repo: BrainIAC
+checkpoint_path: models/BrainIAC.ckpt
+output_dir: outputs
+
+image_size: [96, 96, 96]
+batch_size: 1
+num_workers: 2
+seed: 42
+num_folds: 5
+device: cuda
+gpu_id: 1 
+
+sklearn:
+  classifier: logistic_regression
+  standardize_features: true
+  C: 1.0
+  penalty: l2
+  max_iter: 2000
+  class_weight: balanced

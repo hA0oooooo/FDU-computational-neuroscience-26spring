@@ -64,6 +64,26 @@ class BrainIACTaskModel(nn.Module):
         return age, sex_logits
 
 
+class BrainIACLabelModel(nn.Module):
+    def __init__(self, brainiac_repo, checkpoint_path, num_classes, dropout=0.0):
+        super().__init__()
+        self.encoder = BrainIACEncoder(brainiac_repo, checkpoint_path)
+        self.backbone = self.encoder.backbone
+        self.dropout = nn.Dropout(p=float(dropout))
+        self.label_head = nn.Linear(768, int(num_classes))
+
+    def freeze_backbone(self):
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+
+    def forward_features(self, image):
+        return self.encoder(image)
+
+    def forward(self, image):
+        features = self.dropout(self.forward_features(image))
+        return self.label_head(features)
+
+
 def extract_embeddings(model_or_encoder, loader, device, desc="Extract embeddings"):
     model_or_encoder.eval()
     ids = []

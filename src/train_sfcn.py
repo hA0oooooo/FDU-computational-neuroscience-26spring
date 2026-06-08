@@ -6,7 +6,14 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 
-from src.data_augment import augment_enabled, augment_multiplier, expanded_indices, get_sfcn_train_transform
+from src.data_augment import (
+    augment_enabled,
+    augment_multiplier,
+    expanded_indices,
+    get_sfcn_train_transform,
+    make_sfcn_separate_augment_dataset,
+    separate_augment_enabled,
+)
 from src.dataset import UKBAgeSexDataset, get_sfcn_transform
 from src.metrics import (
     baseline_age_metrics,
@@ -246,13 +253,22 @@ def run_supervised_training(config, config_path, device, dataset, train_dataset,
 
     for fold, (train_idx, val_idx) in enumerate(folds):
         set_seed(int(config["seed"]) + fold)
-        train_loader = make_loader(
-            train_dataset,
-            expanded_indices(train_idx, augment_multiplier(config)),
-            config,
-            device,
-            shuffle=True,
-        )
+        if separate_augment_enabled(config):
+            train_loader = make_loader(
+                make_sfcn_separate_augment_dataset(train_dataset, train_idx, config),
+                None,
+                config,
+                device,
+                shuffle=True,
+            )
+        else:
+            train_loader = make_loader(
+                train_dataset,
+                expanded_indices(train_idx, augment_multiplier(config)),
+                config,
+                device,
+                shuffle=True,
+            )
         val_loader = make_loader(dataset, val_idx, config, device, shuffle=False)
         model = SFCNWrapper(
             sfcn_repo=config["sfcn_repo"],
@@ -349,7 +365,7 @@ def run_sfcn_training(config, config_path, device):
             "  python data.py --dataset ukb --model sfcn"
         )
     dataset = UKBAgeSexDataset(config["metadata_csv"], transform=transform)
-    train_transform = get_sfcn_train_transform(config) if augment_enabled(config) else transform
+    train_transform = get_sfcn_train_transform(config) if augment_enabled(config) and not separate_augment_enabled(config) else transform
     train_dataset = UKBAgeSexDataset(config["metadata_csv"], transform=train_transform, sex_classes=dataset.sex_classes)
     mode = str(config.get("mode", "pretrained_eval")).lower()
 

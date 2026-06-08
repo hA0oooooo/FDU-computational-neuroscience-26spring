@@ -18,6 +18,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UKB_RAW_DIR = PROJECT_ROOT / "dataset" / "UKB_T1_100cases"
 UKB_PROCESSED_DIR = PROJECT_ROOT / "dataset" / "processed_brainiac" / "UKB"
 UKB_IMAGES_DIR = UKB_PROCESSED_DIR / "images"
+ADNI_RAW_CANDIDATES = [
+    PROJECT_ROOT / "dataset" / "ADNI_data_105cases",
+    PROJECT_ROOT / "dataset" / "ADNI_data",
+]
+ADNI_PROCESSED_DIR = PROJECT_ROOT / "dataset" / "processed_brainiac" / "ADNI"
+ADNI_IMAGES_DIR = ADNI_PROCESSED_DIR / "images"
 
 BRAINIAC_PREPROCESS_DIR = PROJECT_ROOT / "BrainIAC" / "src" / "preprocessing"
 BRAINIAC_TEMPLATE = BRAINIAC_PREPROCESS_DIR / "atlases" / "temp_head.nii.gz"
@@ -57,6 +63,24 @@ def find_ukb_csv(raw_dir):
     return csv_files[0]
 
 
+def find_adni_raw_dir():
+    for raw_dir in ADNI_RAW_CANDIDATES:
+        if raw_dir.exists():
+            return raw_dir
+    raise FileNotFoundError(
+        "Missing ADNI directory. Extract dataset/ADNI_data_105cases.tar.gz first."
+    )
+
+
+def find_adni_csv(raw_dir):
+    csv_files = sorted(raw_dir.glob("*.csv"))
+    if not csv_files:
+        raise FileNotFoundError(f"No CSV found under {raw_dir}.")
+    if len(csv_files) > 1:
+        print(f"WARNING: multiple CSV files found, using {csv_files[0].relative_to(PROJECT_ROOT)}")
+    return csv_files[0]
+
+
 def pick_column(columns, candidates):
     normalized = {c.lower().replace("_", "").replace("-", ""): c for c in columns}
     for candidate in candidates:
@@ -64,6 +88,29 @@ def pick_column(columns, candidates):
         if key in normalized:
             return normalized[key]
     raise ValueError(f"Could not find any of {candidates} in CSV columns: {columns}")
+
+
+def pick_label_column(columns, rows):
+    candidates = ["label", "diagnosis", "dx", "group", "class"]
+    try:
+        return pick_column(columns, candidates)
+    except ValueError:
+        valid = {"CN", "MCI", "AD", "DEMENTIA"}
+        for column in columns:
+            values = {str(row[column]).strip().upper() for row in rows if str(row[column]).strip()}
+            if values and values <= valid:
+                return column
+    raise ValueError(f"Could not infer ADNI label column from CSV columns: {columns}")
+
+
+def normalize_adni_label(value):
+    text = str(value).strip()
+    upper = text.upper()
+    if upper == "DEMENTIA":
+        return "AD"
+    if upper in {"CN", "MCI", "AD"}:
+        return upper
+    raise ValueError(f"Unsupported ADNI label: {value}")
 
 
 def case_dirs(raw_dir):
@@ -207,6 +254,18 @@ def hd_bet_device():
     return os.environ.get("BRAINIAC_HDBET_DEVICE", "0")
 
 
+def ensure_hd_bet_gpu_available():
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("HD-BET requires torch in the active cn environment.") from exc
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "HD-BET requires a CUDA-visible GPU, but torch.cuda.is_available() is False. "
+            "Run preprocessing from the GPU-enabled cn environment."
+        )
+
+
 def run_hd_bet(image, temp_dir, case_id, hd_bet_runner):
     input_path = Path(temp_dir) / f"{case_id}_0000.nii.gz"
     output_path = Path(temp_dir) / f"{case_id}_brain.nii.gz"
@@ -263,10 +322,18 @@ def z_normalize_nonzero(image):
     return sitk.Cast(normalized, sitk.sitkFloat32)
 
 
-def preprocess_to_brainiac(input_path, input_kind, output_path, case_id, fixed_reference, hd_bet_runner):
+def preprocess_to_brainiac(
+    input_path,
+    input_kind,
+    output_path,
+    case_id,
+    fixed_reference,
+    hd_bet_runner,
+    work_dir=UKB_PROCESSED_DIR,
+):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     notes = []
-    with tempfile.TemporaryDirectory(prefix=f"brainiac_{case_id}_", dir=str(UKB_PROCESSED_DIR)) as temp_dir:
+    with tempfile.TemporaryDirectory(prefix=f"brainiac_{case_id}_", dir=str(work_dir)) as temp_dir:
         image = read_input_as_image(input_path, input_kind, temp_dir, case_id)
         image = n4_bias_field_correction(image)
         image = resample_to_spacing(image, spacing=TARGET_SPACING)
@@ -313,6 +380,14 @@ def fail_status(reason):
     return f"fail: {text[:300]}"
 
 
+def output_qc(output_path):
+    image = sitk.ReadImage(str(output_path), sitk.sitkFloat32)
+    return {
+        "output_shape": "x".join(str(v) for v in image.GetSize()),
+        "output_spacing": "x".join(f"{v:g}" for v in image.GetSpacing()),
+    }
+
+
 def build_ukb_metadata():
     if not UKB_RAW_DIR.exists():
         raise FileNotFoundError(f"Missing UKB directory: {UKB_RAW_DIR}")
@@ -334,6 +409,9 @@ def build_ukb_metadata():
     dirs = case_dirs(UKB_RAW_DIR)
     print(f"Input cases: {len(dirs)}")
 
+    hd_bet_runner = get_hd_bet_runner()
+    ensure_hd_bet_gpu_available()
+
     UKB_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     if UKB_IMAGES_DIR.exists():
         shutil.rmtree(UKB_IMAGES_DIR)
@@ -347,7 +425,6 @@ def build_ukb_metadata():
         else:
             print("WARNING: registration enabled but BrainIAC template is missing; registration will be skipped.")
 
-    hd_bet_runner = get_hd_bet_runner()
     print(f"HD-BET: enabled, device={hd_bet_device()}")
 
     metadata = []
@@ -427,3 +504,166 @@ def build_ukb_metadata():
     missing, image_count = validate_outputs(metadata)
     print(f"metadata image_path missing count: {len(missing)}")
     print(f"processed image file count: {image_count}")
+
+
+def build_adni_metadata():
+    raw_dir = find_adni_raw_dir()
+    csv_path = find_adni_csv(raw_dir)
+    columns, rows = read_csv_rows(csv_path)
+
+    print("ADNI BrainIAC preprocessing")
+    print(f"Raw data: {raw_dir.relative_to(PROJECT_ROOT)}")
+    print(f"CSV: {csv_path.relative_to(PROJECT_ROOT)}")
+    print(f"CSV columns: {columns}")
+    print("CSV head:")
+    for row in rows[:5]:
+        print(dict(row))
+    print(f"CSV samples: {len(rows)}")
+
+    id_col = pick_column(columns, ["ID", "eid", "subject", "subject_id", "caseid", "case_id"])
+    label_col = pick_label_column(columns, rows)
+    row_by_id = {clean_value(row[id_col]): row for row in rows}
+    labels = [normalize_adni_label(row[label_col]) for row in rows]
+    print(f"Label values: {sorted(set(labels))}")
+    print("Label distribution:", dict(Counter(labels)))
+
+    dirs = case_dirs(raw_dir)
+    dir_by_id = {clean_value(path.name): path for path in dirs}
+    missing_dirs = sorted(case_id for case_id in row_by_id if case_id not in dir_by_id)
+    extra_dirs = sorted(case_id for case_id in dir_by_id if case_id not in row_by_id)
+    print(f"Image case folders: {len(dirs)}")
+    print(f"CSV rows missing folders: {len(missing_dirs)}")
+    print(f"Extra folders not in CSV: {len(extra_dirs)}")
+
+    hd_bet_runner = get_hd_bet_runner()
+    ensure_hd_bet_gpu_available()
+
+    ADNI_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    if ADNI_IMAGES_DIR.exists():
+        shutil.rmtree(ADNI_IMAGES_DIR)
+    ADNI_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+
+    fixed_reference = None
+    if REGISTRATION_ENABLED:
+        if BRAINIAC_TEMPLATE.exists():
+            fixed_reference = make_registration_reference()
+            print(f"Registration: enabled, template={BRAINIAC_TEMPLATE.relative_to(PROJECT_ROOT)}")
+        else:
+            print("WARNING: registration enabled but BrainIAC template is missing; registration will be skipped.")
+
+    print(f"HD-BET: enabled, device={hd_bet_device()}")
+
+    metadata = []
+    details = []
+    failed = []
+    for case_id in tqdm(sorted(row_by_id), desc="Preprocessing ADNI", unit="case"):
+        row = row_by_id[case_id]
+        label = normalize_adni_label(row[label_col])
+        case_dir = dir_by_id.get(case_id)
+        detail = {
+            "ID": case_id,
+            "source_file": "",
+            "input_kind": "",
+            "output_shape": "",
+            "output_spacing": "",
+            "preprocessing_status": "",
+            "error_message": "",
+        }
+
+        if case_dir is None:
+            reason = "missing image folder"
+            failed.append({"ID": case_id, "error_message": reason})
+            detail["preprocessing_status"] = fail_status(reason)
+            detail["error_message"] = reason
+            details.append(detail)
+            metadata.append(
+                {"ID": case_id, "image_path": "", "label": label, "preprocessing_status": fail_status(reason)}
+            )
+            continue
+
+        input_path, input_kind = find_input_image(case_dir)
+        if input_path is None:
+            reason = "missing image"
+            failed.append({"ID": case_id, "error_message": reason})
+            detail["preprocessing_status"] = fail_status(reason)
+            detail["error_message"] = reason
+            details.append(detail)
+            metadata.append(
+                {"ID": case_id, "image_path": "", "label": label, "preprocessing_status": fail_status(reason)}
+            )
+            continue
+
+        output_path = ADNI_IMAGES_DIR / f"{case_id}.nii.gz"
+        detail["source_file"] = str(input_path.relative_to(PROJECT_ROOT)) if input_kind == "nifti" else str(case_dir.relative_to(PROJECT_ROOT))
+        detail["input_kind"] = input_kind
+        try:
+            status = preprocess_to_brainiac(
+                input_path,
+                input_kind,
+                output_path,
+                case_id,
+                fixed_reference,
+                hd_bet_runner,
+                work_dir=ADNI_PROCESSED_DIR,
+            )
+            detail.update(output_qc(output_path))
+            detail["preprocessing_status"] = status
+        except Exception as exc:
+            reason = str(exc)
+            failed.append({"ID": case_id, "error_message": reason})
+            detail["preprocessing_status"] = fail_status(reason)
+            detail["error_message"] = reason
+            details.append(detail)
+            metadata.append(
+                {"ID": case_id, "image_path": "", "label": label, "preprocessing_status": fail_status(reason)}
+            )
+            continue
+
+        details.append(detail)
+        metadata.append(
+            {
+                "ID": case_id,
+                "image_path": str(output_path.relative_to(PROJECT_ROOT)),
+                "label": label,
+                "preprocessing_status": status,
+            }
+        )
+
+    metadata_csv = ADNI_PROCESSED_DIR / "metadata.csv"
+    with metadata_csv.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["ID", "image_path", "label", "preprocessing_status"])
+        writer.writeheader()
+        writer.writerows(metadata)
+
+    details_csv = ADNI_PROCESSED_DIR / "details.csv"
+    with details_csv.open("w", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "ID",
+                "source_file",
+                "input_kind",
+                "output_shape",
+                "output_spacing",
+                "preprocessing_status",
+                "error_message",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(details)
+
+    success_rows = [row for row in metadata if row["image_path"] and not row["preprocessing_status"].startswith("fail")]
+    label_counts = Counter(row["label"] for row in success_rows)
+    missing_outputs = [row["ID"] for row in success_rows if not (PROJECT_ROOT / row["image_path"]).exists()]
+
+    print("\nADNI BrainIAC preprocessing summary")
+    print(f"Processed samples: {len(success_rows)}")
+    print(f"Failed samples: {len(failed)}")
+    if failed:
+        print(f"Failed sample IDs: {[row['ID'] for row in failed]}")
+    print(f"metadata.csv: {metadata_csv.relative_to(PROJECT_ROOT)}")
+    print(f"details.csv: {details_csv.relative_to(PROJECT_ROOT)}")
+    print(f"Image output dir: {ADNI_IMAGES_DIR.relative_to(PROJECT_ROOT)}")
+    print("Label distribution:", dict(label_counts))
+    print(f"metadata image_path missing count: {len(missing_outputs)}")
+    print(f"processed image file count: {len(list(ADNI_IMAGES_DIR.glob('*.nii.gz')))}")

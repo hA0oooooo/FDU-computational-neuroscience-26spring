@@ -1,0 +1,30 @@
+experiment_name: 3dcnn_adni_sklearn_frozen
+dataset: adni
+model: 3dcnn
+trainer: sklearn
+task: label
+mode: frozen
+feature_source: frozen
+
+processed_dir: dataset/processed_3dcnn/ADNI
+metadata_csv: dataset/processed_3dcnn/ADNI/metadata.csv
+features_dir: dataset/processed_3dcnn/ADNI/features
+checkpoint_path: 3D_CNN_pretrained_model/AD_pretrained_weights.pt
+output_dir: outputs
+
+embedding_index: 7
+batch_size: 4
+num_workers: 2
+seed: 42
+num_folds: 5
+device: cuda
+gpu_id: 0
+dropout: 0
+
+sklearn:
+  classifier: logistic_regression
+  standardize_features: true
+  C: 1.0
+  penalty: l2
+  max_iter: 2000
+  class_weight: balanced
