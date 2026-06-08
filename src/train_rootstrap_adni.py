@@ -154,7 +154,7 @@ def run_rootstrap_baseline(config, config_path, device):
     transform = rootstrap_transform(tuple(config.get("rootstrap_input_shape", [96, 96, 96])), train=False)
     dataset = ADNILabelDataset(config["metadata_csv"], transform=transform, label_classes=ROOTSTRAP_LABELS)
     loader = make_loader(dataset, None, config, device, shuffle=False)
-    model = RootstrapDenseNet(config["checkpoint_path"], load_pretrained=True).to(device)
+    model = RootstrapDenseNet(config["checkpoint_path"], load_pretrained=True, dropout=float(config.get("dropout", 0))).to(device)
     pred_rows, y_true, y_pred = predict(model, loader, device)
     metrics = adni_classification_metrics(y_true, y_pred, "model")
     baseline = majority_baseline_metrics(y_true, y_true)
@@ -234,6 +234,9 @@ def run_rootstrap_finetune(config, config_path, device):
     output_dir = output_dir_from_config(config_path, config["output_dir"])
     experiment_name = str(config.get("experiment_name", Path(config_path).stem))
     num_folds = int(config.get("num_folds", 5))
+    seeds = config.get("seeds") or [int(config["seed"])]
+    seeds = [int(seed) for seed in seeds]
+    multi_seed = len(seeds) > 1
     image_size = tuple(config.get("rootstrap_input_shape", [96, 96, 96]))
     dataset = ADNILabelDataset(config["metadata_csv"], transform=rootstrap_transform(image_size, train=False), label_classes=ROOTSTRAP_LABELS)
     train_dataset = ADNILabelDataset(
@@ -245,84 +248,98 @@ def run_rootstrap_finetune(config, config_path, device):
     if min(Counter(labels).values()) < num_folds:
         raise ValueError(f"ADNI label count is too small for {num_folds}-fold: {dict(Counter(labels))}")
 
-    folds = stratified_k_fold_indices(labels, num_folds=num_folds, seed=int(config["seed"]))
     criterion = nn.CrossEntropyLoss()
     fold_rows = []
-    all_pred_rows = []
+    pred_by_id = {}
     log_rows = []
     freeze_batchnorm = bool(config.get("freeze_batchnorm", True))
 
-    for fold, (train_idx, val_idx) in enumerate(folds):
-        set_seed(int(config["seed"]) + fold)
-        train_labels = dataset.labels(train_idx)
-        val_labels = dataset.labels(val_idx)
-        print_fold_distribution(fold, train_labels, val_labels)
-        train_loader = make_loader(train_dataset, train_idx, config, device, shuffle=True)
-        val_loader = make_loader(dataset, val_idx, config, device, shuffle=False)
-        model = RootstrapDenseNet(config["checkpoint_path"], load_pretrained=True).to(device)
-        optimizer = build_optimizer(model, config)
-        best_score = -1.0
-        best_epoch = 0
-        best_path = output_dir / f"fold_{fold}.pt"
+    for seed in seeds:
+        folds = stratified_k_fold_indices(labels, num_folds=num_folds, seed=seed)
+        for fold, (train_idx, val_idx) in enumerate(folds):
+            set_seed(seed + fold)
+            train_labels = dataset.labels(train_idx)
+            val_labels = dataset.labels(val_idx)
+            print_fold_distribution(fold, train_labels, val_labels)
+            train_loader = make_loader(train_dataset, train_idx, config, device, shuffle=True)
+            val_loader = make_loader(dataset, val_idx, config, device, shuffle=False)
+            model = RootstrapDenseNet(
+                config["checkpoint_path"],
+                load_pretrained=True,
+                dropout=float(config.get("dropout", 0)),
+            ).to(device)
+            optimizer = build_optimizer(model, config)
+            best_score = -1.0
+            best_epoch = 0
+            best_path = output_dir / (f"seed_{seed}_fold_{fold}.pt" if multi_seed else f"fold_{fold}.pt")
 
-        for epoch in range(1, int(config.get("epochs", 20)) + 1):
-            train_metrics = run_epoch(model, train_loader, device, criterion, optimizer, freeze_batchnorm=freeze_batchnorm)
-            val_metrics = run_epoch(model, val_loader, device, criterion)
-            is_best = val_metrics["label_balanced_acc"] > best_score
-            if is_best:
-                best_score = val_metrics["label_balanced_acc"]
-                best_epoch = epoch
-                torch.save(
-                    {
-                        "config": config,
-                        "fold": fold,
-                        "epoch": epoch,
-                        "model_state_dict": model.state_dict(),
-                        "label_classes": ROOTSTRAP_LABELS,
-                        "metrics": {"train": train_metrics, "val": val_metrics},
-                    },
-                    best_path,
+            for epoch in range(1, int(config.get("epochs", 20)) + 1):
+                train_metrics = run_epoch(model, train_loader, device, criterion, optimizer, freeze_batchnorm=freeze_batchnorm)
+                val_metrics = run_epoch(model, val_loader, device, criterion)
+                is_best = val_metrics["label_balanced_acc"] > best_score
+                if is_best:
+                    best_score = val_metrics["label_balanced_acc"]
+                    best_epoch = epoch
+                    torch.save(
+                        {
+                            "config": config,
+                            "seed": seed,
+                            "fold": fold,
+                            "epoch": epoch,
+                            "model_state_dict": model.state_dict(),
+                            "label_classes": ROOTSTRAP_LABELS,
+                            "metrics": {"train": train_metrics, "val": val_metrics},
+                        },
+                        best_path,
+                    )
+                log_row = {
+                    "seed": seed,
+                    "fold": fold,
+                    "epoch": epoch,
+                    "train_loss": train_metrics["loss"],
+                    "train_acc": train_metrics["label_acc"],
+                    "train_balanced_acc": train_metrics["label_balanced_acc"],
+                    "val_loss": val_metrics["loss"],
+                    "val_acc": val_metrics["label_acc"],
+                    "val_balanced_acc": val_metrics["label_balanced_acc"],
+                    "val_macro_f1": val_metrics["label_macro_f1"],
+                    "is_best": int(is_best),
+                }
+                log_rows.append(log_row)
+                write_csv(output_dir / "train_log.csv", log_rows)
+                print(
+                    f"seed {seed} fold {fold + 1:02d}/{num_folds} epoch {epoch:03d} "
+                    f"train_loss={train_metrics['loss']} train_acc={train_metrics['label_acc']} "
+                    f"val_loss={val_metrics['loss']} val_acc={val_metrics['label_acc']} "
+                    f"val_balanced_acc={val_metrics['label_balanced_acc']}"
                 )
-            log_row = {
-                "fold": fold,
-                "epoch": epoch,
-                "train_loss": train_metrics["loss"],
-                "train_acc": train_metrics["label_acc"],
-                "train_balanced_acc": train_metrics["label_balanced_acc"],
-                "val_loss": val_metrics["loss"],
-                "val_acc": val_metrics["label_acc"],
-                "val_balanced_acc": val_metrics["label_balanced_acc"],
-                "val_macro_f1": val_metrics["label_macro_f1"],
-                "is_best": int(is_best),
-            }
-            log_rows.append(log_row)
-            write_csv(output_dir / "train_log.csv", log_rows)
-            print(
-                f"fold {fold + 1:02d}/{num_folds} epoch {epoch:03d} "
-                f"train_loss={train_metrics['loss']} train_acc={train_metrics['label_acc']} "
-                f"val_loss={val_metrics['loss']} val_acc={val_metrics['label_acc']} "
-                f"val_balanced_acc={val_metrics['label_balanced_acc']}"
+
+            checkpoint = torch.load(best_path, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            pred_rows, val_true, val_pred = predict(model, val_loader, device)
+            for row in pred_rows:
+                pred_by_id.setdefault(str(row["ID"]), []).append(row["Pre"])
+            baseline = majority_baseline_metrics(train_labels, val_true)
+            model_metrics = adni_classification_metrics(val_true, val_pred, "model")
+            fold_rows.append(
+                {
+                    "seed": seed,
+                    "fold": fold,
+                    "best_epoch": best_epoch,
+                    "train_size": len(train_idx),
+                    "val_size": len(val_idx),
+                    **baseline,
+                    **model_metrics,
+                    "confusion_matrix": confusion_matrix_rows(val_true, val_pred, ROOTSTRAP_LABELS),
+                }
             )
 
-        checkpoint = torch.load(best_path, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        pred_rows, val_true, val_pred = predict(model, val_loader, device)
-        all_pred_rows.extend(pred_rows)
-        baseline = majority_baseline_metrics(train_labels, val_true)
-        model_metrics = adni_classification_metrics(val_true, val_pred, "model")
-        fold_rows.append(
-            {
-                "fold": fold,
-                "best_epoch": best_epoch,
-                "train_size": len(train_idx),
-                "val_size": len(val_idx),
-                **baseline,
-                **model_metrics,
-                "confusion_matrix": confusion_matrix_rows(val_true, val_pred, ROOTSTRAP_LABELS),
-            }
-        )
-
-    write_csv(output_dir / "pred.csv", sorted(all_pred_rows, key=lambda row: row["ID"]), fieldnames=["ID", "Pre"])
+    final_pred_rows = []
+    for case_id, values in pred_by_id.items():
+        counts = Counter(values)
+        label = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+        final_pred_rows.append({"ID": case_id, "Pre": label})
+    write_csv(output_dir / "pred.csv", sorted(final_pred_rows, key=lambda row: row["ID"]), fieldnames=["ID", "Pre"])
     write_json(output_dir / "label_mapping.json", label_mapping(ROOTSTRAP_LABELS))
     write_json(
         output_dir / "metrics.json",

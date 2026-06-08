@@ -53,9 +53,11 @@ def find_adni_raw_dir():
     raise FileNotFoundError("Missing ADNI directory. Extract dataset/ADNI_data_105cases.tar.gz first.")
 
 
-def find_adni_csv(raw_dir):
+def find_adni_csv(raw_dir, require=True):
     csv_files = sorted(Path(raw_dir).glob("*.csv"))
     if not csv_files:
+        if not require:
+            return None
         raise FileNotFoundError(f"No CSV found under {raw_dir}")
     return csv_files[0]
 
@@ -289,7 +291,7 @@ def preprocess_case(case_dir, row, label_col, fsl, images_dir):
     metadata = {
         "ID": case_id,
         "image_path": str(output_path.relative_to(PROJECT_ROOT)),
-        "label": normalize_label(row[label_col]) if row is not None else "",
+        "label": normalize_label(row[label_col]) if row is not None and label_col else "",
         "preprocessing_status": "success",
     }
     return metadata, details
@@ -301,16 +303,17 @@ def preprocess_case_worker(payload):
     case_id = clean_value(case_dir.name)
     row = payload["row"]
     label_col = payload["label_col"]
+    require_labels = bool(payload.get("require_labels", True))
 
     def failed_metadata(reason):
         return {
             "ID": case_id,
             "image_path": "",
-            "label": normalize_label(row[label_col]) if row is not None else "",
+            "label": normalize_label(row[label_col]) if row is not None and label_col else "",
             "preprocessing_status": f"fail: {fail_status(reason)}",
         }
 
-    if row is None:
+    if row is None and require_labels:
         reason = "missing CSV row"
         return {
             "metadata": failed_metadata(reason),
@@ -343,24 +346,28 @@ def write_csv(path, rows, fieldnames):
     return path
 
 
-def build_adni_rootstrap_metadata():
-    raw_dir = find_adni_raw_dir().resolve()
-    processed_dir = PROCESSED_DIR.resolve()
+def build_adni_rootstrap_metadata(raw_dir=None, processed_dir=None, require_labels=True, dataset_name="ADNI"):
+    raw_dir = Path(raw_dir).resolve() if raw_dir is not None else find_adni_raw_dir().resolve()
+    processed_dir = Path(processed_dir).resolve() if processed_dir is not None else PROCESSED_DIR.resolve()
     images_dir = processed_dir / "images"
-    csv_path = find_adni_csv(raw_dir)
-    columns, rows = read_csv_rows(csv_path)
-    id_col = pick_column(columns, ["ID", "eid", "caseid", "case_id", "subject"])
-    label_col = pick_label_column(columns, rows)
-    row_by_id = {clean_value(row[id_col]): row for row in rows}
+    csv_path = find_adni_csv(raw_dir, require=require_labels)
+    label_col = None
+    row_by_id = {}
+    if csv_path is not None and require_labels:
+        columns, rows = read_csv_rows(csv_path)
+        id_col = pick_column(columns, ["ID", "eid", "caseid", "case_id", "subject"])
+        label_col = pick_label_column(columns, rows)
+        row_by_id = {clean_value(row[id_col]): row for row in rows}
     dirs = case_dirs(raw_dir)
     fsl = fsl_context()
 
     processed_dir.mkdir(parents=True, exist_ok=True)
     images_dir.mkdir(parents=True, exist_ok=True)
 
-    print("ADNI Rootstrap preprocessing")
+    print(f"{dataset_name} Rootstrap preprocessing")
     print(f"Raw data: {path_text(raw_dir)}")
-    print(f"CSV: {path_text(csv_path)}")
+    if csv_path is not None:
+        print(f"CSV: {path_text(csv_path)}")
     print(f"Processed dir: {path_text(processed_dir)}")
     print(f"MNI reference: {fsl['mni']}")
     print(f"Workers: {ROOTSTRAP_NUM_WORKERS}")
@@ -372,6 +379,7 @@ def build_adni_rootstrap_metadata():
             "label_col": label_col,
             "fsl": fsl,
             "images_dir": str(images_dir),
+            "require_labels": require_labels,
         }
         for case_dir in dirs
     ]
@@ -421,11 +429,12 @@ def build_adni_rootstrap_metadata():
 
     successful = [row for row in metadata if row.get("image_path")]
     failed = [row for row in metadata if not row.get("image_path")]
-    print("\nADNI Rootstrap preprocessing summary")
+    print(f"\n{dataset_name} Rootstrap preprocessing summary")
     print(f"processed image count: {len(successful)}")
     print(f"failed case count: {len(failed)}")
     print(f"metadata.csv: {metadata_csv.relative_to(PROJECT_ROOT)}")
     print(f"details.csv: {details_csv.relative_to(PROJECT_ROOT)}")
-    print("label distribution:", dict(Counter(row["label"] for row in successful)))
+    if require_labels:
+        print("label distribution:", dict(Counter(row["label"] for row in successful)))
     print("final shape statistics:", dict(Counter(row.get("final_shape", "") for row in details if row.get("status") == "success")))
     return metadata_csv

@@ -1,4 +1,4 @@
-experiment_name: rootstrap_adni_finetune
+experiment_name: rootstrap_adni_finetune_data_aug_seed3
 dataset: adni
 model: rootstrap
 trainer: dl
@@ -13,15 +13,23 @@ checkpoint_path: models/Alzheimer-Classifier-Demo/86_acc_model.pth
 rootstrap_input_shape: [96, 96, 96]
 
 seed: 42
+seeds: [42, 2024, 3407]
 num_folds: 5
 batch_size: 1
 epochs: 50
-lr: 0.0001
-weight_decay: 0
-dropout: 0
+lr: 0.00001
+weight_decay: 1e-4
+dropout: 0.2
 freeze_batchnorm: true
 data_augment:
-  enabled: false
+  enabled: true
+  flip_prob: 0.5
+  affine_prob: 0.5
+  shift_voxels: 5
+  rotate_degrees: 8
+  scale_range: [0.95, 1.05]
+  contrast_prob: 0.2
+  gamma_range: [0.85, 1.15]
 num_workers: 2
 device: cuda
-gpu_id: 0
+gpu_id: 2

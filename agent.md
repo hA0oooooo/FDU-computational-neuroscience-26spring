@@ -251,16 +251,16 @@ python train.py --config configs/rootstrap_adni_finetune_data_aug.yaml
 | `brainmvp_adni_dl_finetune` | 0.581 | 0.581 | 0.539 |
 
 
-# 测试
+# 评测
 
 ### Age & Sex
 
-1. 如果测试集是压缩包，直接传给 `eval.py`，代码会解压到 `dataset/<dataset_name>/`
+1. 如果测试集是压缩包，直接传给 `eval1.py`，代码会解压到 `dataset/<dataset_name>/`
 2. 如果测试集已经手动解压，直接传解压后的目录
 3. `<dataset_name>` 自动由路径名推导，例如 `dataset/UKB_TEST.tar.gz` -> `UKB_TEST`
-4. `eval.py` 调用 SFCN 预处理，输出到 `dataset/processed_sfcn/<dataset_name>/`
-5. Age 使用 `outputs/sfcn_ukb_age_finetune_data_aug/fold_0.pt` 到 `fold_4.pt`，五个预测取平均
-6. Sex 使用 `outputs/sfcn_ukb_sex_finetune/fold_0.pt` 到 `fold_4.pt`，五个模型的 class probability 平均后再 argmax
+4. `eval1.py` 调用 SFCN 预处理，输出到 `dataset/processed_sfcn/<dataset_name>/`
+5. Age 使用 `outputs/sfcn_ukb_age_finetune_data_aug_seed3/seed_<seed>_fold_<fold>.pt`，3 个 seed × 5 个 fold 的年龄分布平均后求预测年龄
+6. Sex 使用 `outputs/sfcn_ukb_sex_finetune_seed3/seed_<seed>_fold_<fold>.pt`，3 个 seed × 5 个 fold 的 class probability 平均后 argmax
 7. Age 和 Sex 合并成唯一提交文件 `outputs/<dataset_name>/pred.csv`
 
 命令：
@@ -268,17 +268,31 @@ python train.py --config configs/rootstrap_adni_finetune_data_aug.yaml
 ```bash
 conda activate cn
 # 测试集为 tar.gz，假设内部结构与 UKB_T1_100cases.tar.gz 接近
-python eval.py --dataset dataset/UKB_TEST.tar.gz
+python eval1.py --dataset dataset/UKB_TEST.tar.gz
 # 测试集已解压，假设目录下是 CASEID 子文件夹和可选 csv
-python eval.py --dataset dataset/UKB_TEST
+python eval1.py --dataset dataset/UKB_TEST
 ```
 
-- Age：`configs/sfcn_ukb_age_finetune_data_aug.yaml`
-- Sex：`configs/sfcn_ukb_sex_finetune.yaml`
+- Age：`configs/sfcn_ukb_age_finetune_data_aug_seed3.yaml`
+- Sex：`configs/sfcn_ukb_sex_finetune_seed3.yaml`
 
 
 ### ADNI
 
+1. 如果测试集是压缩包，直接传给 `eval2.py`，代码会解压到 `dataset/<dataset_name>/`
+2. 如果测试集已经手动解压，直接传解压后的目录
+3. `eval2.py` 调用 Rootstrap 预处理，输出到 `dataset/processed_rootstrap/<dataset_name>/`
+4. 当前使用 `rootstrap_adni_finetune_data_aug_seed3`，3 个 seed × 5 个 fold 的 logits 平均后 argmax
+5. 输出唯一提交文件 `outputs/<dataset_name>/pred.csv`，字段为 `ID,Pre`，`Pre` 为 `CN/MCI/AD`
 
+命令：
 
-- ADNI：`configs/rootstrap_adni_finetune_data_aug.yaml`
+```bash
+conda activate cn
+# 测试集为 tar.gz，假设内部结构与 ADNI_data_105cases.tar.gz 接近
+python eval2.py --dataset dataset/ADNI_TEST.tar.gz
+# 测试集已解压，假设目录下是 CASEID 子文件夹和可选 csv
+python eval2.py --dataset dataset/ADNI_TEST
+```
+
+- ADNI：`configs/rootstrap_adni_finetune_data_aug_seed3.yaml`

@@ -17,9 +17,15 @@ def rootstrap_checkpoint_missing_message(path):
 
 
 class RootstrapDenseNet(nn.Module):
-    def __init__(self, checkpoint_path=None, load_pretrained=True):
+    def __init__(self, checkpoint_path=None, load_pretrained=True, dropout=0.0):
         super().__init__()
-        self.model = DenseNet121(spatial_dims=3, in_channels=1, out_channels=3)
+        dropout = float(dropout)
+        try:
+            self.model = DenseNet121(spatial_dims=3, in_channels=1, out_channels=3, dropout_prob=dropout)
+        except TypeError as exc:
+            if dropout > 0:
+                raise TypeError("This MONAI DenseNet121 does not support dropout_prob; set dropout: 0.") from exc
+            self.model = DenseNet121(spatial_dims=3, in_channels=1, out_channels=3)
         if load_pretrained:
             self.load_checkpoint(checkpoint_path)
 

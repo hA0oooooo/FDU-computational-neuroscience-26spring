@@ -65,6 +65,7 @@ SUMMARY_METRIC_ORDER = [
 ]
 
 FOLD_SUMMARY_ORDER = [
+    "seed",
     "fold",
     "best_epoch",
     "train_size",

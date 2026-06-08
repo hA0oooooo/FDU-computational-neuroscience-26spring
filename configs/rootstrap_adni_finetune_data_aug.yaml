@@ -16,8 +16,9 @@ seed: 42
 num_folds: 5
 batch_size: 1
 epochs: 50
-lr: 0.0001
-weight_decay: 0
+lr: 0.00001
+weight_decay: 1e-4
+dropout: 0.2
 freeze_batchnorm: true
 data_augment:
   enabled: true
@@ -30,4 +31,4 @@ data_augment:
   gamma_range: [0.85, 1.15]
 num_workers: 2
 device: cuda
-gpu_id: 1
+gpu_id: 2

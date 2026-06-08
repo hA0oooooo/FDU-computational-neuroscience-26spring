@@ -242,102 +242,115 @@ def run_pretrained_eval(config, config_path, device, dataset, task, output_dir, 
 
 def run_supervised_training(config, config_path, device, dataset, train_dataset, task, output_dir, experiment_name, mode):
     num_folds = int(config.get("num_folds", 5))
-    folds = stratified_k_fold_indices(
-        age_sex_stratification_labels(dataset, num_folds),
-        num_folds=num_folds,
-        seed=int(config["seed"]),
-    )
-    all_pred_rows = []
+    seeds = config.get("seeds") or [int(config["seed"])]
+    seeds = [int(seed) for seed in seeds]
+    multi_seed = len(seeds) > 1
+    stratification_labels = age_sex_stratification_labels(dataset, num_folds)
+    pred_by_id = {}
     fold_metrics = []
     log_rows = []
 
-    for fold, (train_idx, val_idx) in enumerate(folds):
-        set_seed(int(config["seed"]) + fold)
-        if separate_augment_enabled(config):
-            train_loader = make_loader(
-                make_sfcn_separate_augment_dataset(train_dataset, train_idx, config),
-                None,
-                config,
-                device,
-                shuffle=True,
-            )
-        else:
-            train_loader = make_loader(
-                train_dataset,
-                expanded_indices(train_idx, augment_multiplier(config)),
-                config,
-                device,
-                shuffle=True,
-            )
-        val_loader = make_loader(dataset, val_idx, config, device, shuffle=False)
-        model = SFCNWrapper(
-            sfcn_repo=config["sfcn_repo"],
-            task=task,
-            checkpoint_path=config.get("checkpoint_path"),
-            dropout=bool(config.get("dropout", True)),
-            load_pretrained=bool(config.get("load_pretrained", True)),
-        ).to(device)
-        set_sfcn_trainable(model, mode)
-        optimizer = build_sfcn_optimizer(model, config)
-        best_metric = float("inf") if task == "age" else -float("inf")
-        best_path = output_dir / f"fold_{fold}.pt"
-        best_row = None
-        baseline = fold_baseline_metrics(dataset, train_idx, val_idx, task)
-
-        for epoch in range(1, int(config.get("epochs", 10)) + 1):
-            train_metrics = train_one_epoch(model, train_loader, device, optimizer, task)
-            val_metrics, _ = evaluate_model(model, val_loader, device, task, dataset.sex_classes)
-            row = {
-                "fold": fold,
-                "epoch": epoch,
-                "train_loss": train_metrics["loss"],
-                "val_loss": val_metrics["loss"],
-            }
-            if task == "age":
-                row["train_age_mae"] = train_metrics["age_mae"]
-                row["val_age_mae"] = val_metrics["val_age_mae"]
+    for seed in seeds:
+        folds = stratified_k_fold_indices(stratification_labels, num_folds=num_folds, seed=seed)
+        for fold, (train_idx, val_idx) in enumerate(folds):
+            set_seed(seed + fold)
+            if separate_augment_enabled(config):
+                train_loader = make_loader(
+                    make_sfcn_separate_augment_dataset(train_dataset, train_idx, config),
+                    None,
+                    config,
+                    device,
+                    shuffle=True,
+                )
             else:
-                row["train_sex_acc"] = train_metrics["sex_acc"]
-                row["val_sex_acc"] = val_metrics["val_sex_acc"]
-                row["val_sex_balanced_acc"] = val_metrics["val_sex_balanced_acc"]
-            score = val_metrics["val_age_mae"] if task == "age" else val_metrics["val_sex_balanced_acc"]
-            is_best = score < best_metric if task == "age" else score > best_metric
-            row["is_best"] = int(is_best)
-            if is_best:
-                best_metric = score
-                best_row = {
+                train_loader = make_loader(
+                    train_dataset,
+                    expanded_indices(train_idx, augment_multiplier(config)),
+                    config,
+                    device,
+                    shuffle=True,
+                )
+            val_loader = make_loader(dataset, val_idx, config, device, shuffle=False)
+            model = SFCNWrapper(
+                sfcn_repo=config["sfcn_repo"],
+                task=task,
+                checkpoint_path=config.get("checkpoint_path"),
+                dropout=bool(config.get("dropout", True)),
+                load_pretrained=bool(config.get("load_pretrained", True)),
+            ).to(device)
+            set_sfcn_trainable(model, mode)
+            optimizer = build_sfcn_optimizer(model, config)
+            best_metric = float("inf") if task == "age" else -float("inf")
+            best_path = output_dir / (f"seed_{seed}_fold_{fold}.pt" if multi_seed else f"fold_{fold}.pt")
+            best_row = None
+            baseline = fold_baseline_metrics(dataset, train_idx, val_idx, task)
+
+            for epoch in range(1, int(config.get("epochs", 10)) + 1):
+                train_metrics = train_one_epoch(model, train_loader, device, optimizer, task)
+                val_metrics, _ = evaluate_model(model, val_loader, device, task, dataset.sex_classes)
+                row = {
+                    "seed": seed,
                     "fold": fold,
-                    "best_epoch": epoch,
-                    "train_size": len(train_idx),
-                    "val_size": len(val_idx),
-                    **baseline,
-                    **{key: value for key, value in val_metrics.items() if key != "loss"},
+                    "epoch": epoch,
+                    "train_loss": train_metrics["loss"],
+                    "val_loss": val_metrics["loss"],
                 }
-                torch.save({"config": config, "fold": fold, "epoch": epoch, "model_state_dict": model.state_dict(), "metrics": best_row}, best_path)
-            log_rows.append(row)
-            write_csv(output_dir / "train_log.csv", log_rows)
-            if task == "age":
-                print(
-                    f"fold {fold + 1:02d}/{len(folds)} epoch {epoch:03d} "
-                    f"train_loss={train_metrics['loss']} train_age_mae={train_metrics['age_mae']} "
-                    f"val_loss={val_metrics['loss']} val_age_mae={val_metrics['val_age_mae']}"
-                )
-            else:
-                print(
-                    f"fold {fold + 1:02d}/{len(folds)} epoch {epoch:03d} "
-                    f"train_loss={train_metrics['loss']} train_sex_acc={train_metrics['sex_acc']} "
-                    f"val_loss={val_metrics['loss']} val_sex_acc={val_metrics['val_sex_acc']}"
-                )
+                if task == "age":
+                    row["train_age_mae"] = train_metrics["age_mae"]
+                    row["val_age_mae"] = val_metrics["val_age_mae"]
+                else:
+                    row["train_sex_acc"] = train_metrics["sex_acc"]
+                    row["val_sex_acc"] = val_metrics["val_sex_acc"]
+                    row["val_sex_balanced_acc"] = val_metrics["val_sex_balanced_acc"]
+                score = val_metrics["val_age_mae"] if task == "age" else val_metrics["val_sex_balanced_acc"]
+                is_best = score < best_metric if task == "age" else score > best_metric
+                row["is_best"] = int(is_best)
+                if is_best:
+                    best_metric = score
+                    best_row = {
+                        "seed": seed,
+                        "fold": fold,
+                        "best_epoch": epoch,
+                        "train_size": len(train_idx),
+                        "val_size": len(val_idx),
+                        **baseline,
+                        **{key: value for key, value in val_metrics.items() if key != "loss"},
+                    }
+                    torch.save({"config": config, "seed": seed, "fold": fold, "epoch": epoch, "model_state_dict": model.state_dict(), "metrics": best_row}, best_path)
+                log_rows.append(row)
+                write_csv(output_dir / "train_log.csv", log_rows)
+                if task == "age":
+                    print(
+                        f"seed {seed} fold {fold + 1:02d}/{len(folds)} epoch {epoch:03d} "
+                        f"train_loss={train_metrics['loss']} train_age_mae={train_metrics['age_mae']} "
+                        f"val_loss={val_metrics['loss']} val_age_mae={val_metrics['val_age_mae']}"
+                    )
+                else:
+                    print(
+                        f"seed {seed} fold {fold + 1:02d}/{len(folds)} epoch {epoch:03d} "
+                        f"train_loss={train_metrics['loss']} train_sex_acc={train_metrics['sex_acc']} "
+                        f"val_loss={val_metrics['loss']} val_sex_acc={val_metrics['val_sex_acc']}"
+                    )
 
-        checkpoint = torch.load(best_path, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        best_metrics, pred_rows = evaluate_model(model, val_loader, device, task, dataset.sex_classes)
-        final_metrics = dict(best_row or {})
-        final_metrics.update({key: value for key, value in best_metrics.items() if key != "loss"})
-        fold_metrics.append(fold_summary(final_metrics))
-        all_pred_rows.extend(pred_rows)
+            checkpoint = torch.load(best_path, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            best_metrics, pred_rows = evaluate_model(model, val_loader, device, task, dataset.sex_classes)
+            final_metrics = dict(best_row or {})
+            final_metrics.update({key: value for key, value in best_metrics.items() if key != "loss"})
+            fold_metrics.append(fold_summary(final_metrics))
+            for row in pred_rows:
+                item = pred_by_id.setdefault(str(row["ID"]), [])
+                item.append(row)
 
-    write_csv(output_dir / "pred.csv", sorted(all_pred_rows, key=lambda row: row["ID"]))
+    final_pred_rows = []
+    for case_id, rows in pred_by_id.items():
+        if task == "age":
+            final_pred_rows.append({"ID": case_id, "Age": float(np.mean([float(row["Age"]) for row in rows])), "Sex": ""})
+        else:
+            counts = Counter(str(row["Sex"]) for row in rows)
+            sex = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+            final_pred_rows.append({"ID": case_id, "Age": "", "Sex": sex})
+    write_csv(output_dir / "pred.csv", sorted(final_pred_rows, key=lambda row: row["ID"]))
     write_json(
         output_dir / "metrics.json",
         {

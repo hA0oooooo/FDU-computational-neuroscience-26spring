@@ -12,8 +12,8 @@ from src.preprocess_sfcn import build_sfcn_metadata
 from src.utils import load_yaml, write_csv
 
 
-DEFAULT_AGE_CONFIG = "configs/sfcn_ukb_age_finetune_data_aug.yaml"
-DEFAULT_SEX_CONFIG = "configs/sfcn_ukb_sex_finetune.yaml"
+DEFAULT_AGE_CONFIG = "configs/sfcn_ukb_age_finetune_data_aug_seed3.yaml"
+DEFAULT_SEX_CONFIG = "configs/sfcn_ukb_sex_finetune_seed3.yaml"
 
 
 class SFCNInferenceDataset(Dataset):
@@ -65,8 +65,21 @@ def checkpoint_dir(config_path, config):
     return PROJECT_ROOT / str(config.get("output_dir", "outputs")) / Path(config_path).stem
 
 
-def load_fold_model(config_path, config, task, fold, device):
-    path = checkpoint_dir(config_path, config) / f"fold_{fold}.pt"
+def config_seeds(config):
+    seeds = config.get("seeds") or [int(config.get("seed", 42))]
+    return [int(seed) for seed in seeds]
+
+
+def fold_checkpoint_path(config_path, config, seed, fold):
+    base = checkpoint_dir(config_path, config)
+    seeded = base / f"seed_{seed}_fold_{fold}.pt"
+    if seeded.exists():
+        return seeded
+    return base / f"fold_{fold}.pt"
+
+
+def load_fold_model(config_path, config, task, seed, fold, device):
+    path = fold_checkpoint_path(config_path, config, seed, fold)
     if not path.exists():
         raise FileNotFoundError(f"Missing {task} fold checkpoint: {path}")
     model = SFCNWrapper(
@@ -85,30 +98,38 @@ def load_fold_model(config_path, config, task, fold, device):
 def predict_age(config_path, config, dataset, device):
     loader = DataLoader(dataset, batch_size=int(config.get("batch_size", 1)), shuffle=False, num_workers=int(config.get("num_workers", 2)))
     num_folds = int(config.get("num_folds", 5))
-    sums = {row["ID"]: 0.0 for row in dataset.rows}
+    seeds = config_seeds(config)
+    prob_sums = {row["ID"]: None for row in dataset.rows}
     with torch.no_grad():
-        for fold in range(num_folds):
-            model = load_fold_model(config_path, config, "age", fold, device)
-            for batch in loader:
-                image = batch["image"].to(device)
-                pred = model.forward_age(image).detach().cpu().numpy()
-                for case_id, value in zip(batch["id"], pred):
-                    sums[str(case_id)] += float(value)
-    return {case_id: value / num_folds for case_id, value in sums.items()}
+        for seed in seeds:
+            for fold in range(num_folds):
+                model = load_fold_model(config_path, config, "age", seed, fold, device)
+                for batch in loader:
+                    image = batch["image"].to(device)
+                    prob = torch.exp(model.forward_log_prob(image)).detach().cpu().numpy()
+                    for case_id, values in zip(batch["id"], prob):
+                        key = str(case_id)
+                        if prob_sums[key] is None:
+                            prob_sums[key] = np.zeros_like(values, dtype=np.float64)
+                        prob_sums[key] += values
+    centers = np.arange(42.5, 82.0, 1.0, dtype=np.float64)
+    return {case_id: float((values / (num_folds * len(seeds))).dot(centers)) for case_id, values in prob_sums.items()}
 
 
 def predict_sex(config_path, config, dataset, device, sex_classes):
     loader = DataLoader(dataset, batch_size=int(config.get("batch_size", 1)), shuffle=False, num_workers=int(config.get("num_workers", 2)))
     num_folds = int(config.get("num_folds", 5))
+    seeds = config_seeds(config)
     prob_sums = {row["ID"]: np.zeros(len(sex_classes), dtype=np.float64) for row in dataset.rows}
     with torch.no_grad():
-        for fold in range(num_folds):
-            model = load_fold_model(config_path, config, "sex", fold, device)
-            for batch in loader:
-                image = batch["image"].to(device)
-                prob = torch.exp(model.forward_log_prob(image)).detach().cpu().numpy()
-                for case_id, values in zip(batch["id"], prob):
-                    prob_sums[str(case_id)] += values[: len(sex_classes)]
+        for seed in seeds:
+            for fold in range(num_folds):
+                model = load_fold_model(config_path, config, "sex", seed, fold, device)
+                for batch in loader:
+                    image = batch["image"].to(device)
+                    prob = torch.exp(model.forward_log_prob(image)).detach().cpu().numpy()
+                    for case_id, values in zip(batch["id"], prob):
+                        prob_sums[str(case_id)] += values[: len(sex_classes)]
     return {case_id: sex_classes[int(values.argmax())] for case_id, values in prob_sums.items()}
 
 
