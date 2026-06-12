@@ -17,19 +17,19 @@ seeds: [42, 2024, 3407]
 num_folds: 5
 batch_size: 1
 epochs: 50
-lr: 0.00001
-weight_decay: 1e-4
-dropout: 0.2
+lr: 0.00005
+weight_decay: 1e-5
+dropout: 0.1
 freeze_batchnorm: true
 data_augment:
   enabled: true
-  flip_prob: 0.5
-  affine_prob: 0.5
-  shift_voxels: 5
-  rotate_degrees: 8
-  scale_range: [0.95, 1.05]
-  contrast_prob: 0.2
-  gamma_range: [0.85, 1.15]
+  flip_prob: 0.3
+  affine_prob: 0.35
+  shift_voxels: 3
+  rotate_degrees: 5
+  scale_range: [0.98, 1.02]
+  contrast_prob: 0.1
+  gamma_range: [0.9, 1.1]
 num_workers: 2
 device: cuda
 gpu_id: 2
