@@ -1,0 +1,31 @@
+experiment_name: brainmvp_adni_sklearn_frozen
+dataset: adni
+model: brainmvp
+trainer: sklearn
+task: label
+mode: frozen
+feature_source: frozen
+
+processed_dir: dataset/processed_brainmvp/ADNI
+metadata_csv: dataset/processed_brainmvp/ADNI/metadata.csv
+output_dir: outputs
+brainmvp_repo: BrainMVP
+checkpoint_path: models/brainmvp_uniformer.pth
+brainmvp_input_shape: [96, 96, 64]
+in_channels: 1
+load_pretrained: true
+dropout: 0
+
+seed: 42
+num_folds: 5
+batch_size: 1
+num_workers: 2
+device: cuda
+
+sklearn:
+  classifier: logistic_regression
+  standardize_features: true
+  C: 1.0
+  penalty: l2
+  max_iter: 2000
+  class_weight: balanced

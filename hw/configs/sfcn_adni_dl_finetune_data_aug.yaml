@@ -1,0 +1,38 @@
+experiment_name: sfcn_adni_dl_finetune_data_aug
+dataset: adni
+model: sfcn
+trainer: dl
+task: label
+mode: finetune
+num_classes: 3
+
+processed_dir: dataset/processed_sfcn/ADNI
+metadata_csv: dataset/processed_sfcn/ADNI/metadata.csv
+output_dir: outputs
+sfcn_repo: UKBiobank_deep_pretrain
+sfcn_input_shape: [160, 192, 160]
+checkpoint_path: UKBiobank_deep_pretrain/brain_age/run_20190719_00_epoch_best_mae.p
+pretrained_task: age
+load_pretrained: true
+
+seed: 42
+num_folds: 5
+batch_size: 1
+epochs: 30
+lr: 0.0001
+lr_backbone: 0.00001
+weight_decay: 1e-4
+dropout: true
+data_augment:
+  enabled: true
+  multiplier: 1
+  flip_prob: 0.5
+  affine_prob: 0.5
+  shift_voxels: 5
+  rotate_degrees: 8
+  scale_range: [0.95, 1.05]
+  contrast_prob: 0.2
+  gamma_range: [0.85, 1.15]
+num_workers: 2
+device: cuda
+gpu_id: 0

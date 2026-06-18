@@ -1,0 +1,32 @@
+experiment_name: sfcn_adni_sklearn_frozen
+dataset: adni
+model: sfcn
+trainer: sklearn
+task: label
+mode: frozen
+feature_source: frozen
+
+processed_dir: dataset/processed_sfcn/ADNI
+metadata_csv: dataset/processed_sfcn/ADNI/metadata.csv
+output_dir: outputs
+sfcn_repo: UKBiobank_deep_pretrain
+sfcn_input_shape: [160, 192, 160]
+checkpoint_path: UKBiobank_deep_pretrain/brain_age/run_20190719_00_epoch_best_mae.p
+pretrained_task: age
+load_pretrained: true
+dropout: true
+
+seed: 42
+num_folds: 5
+batch_size: 1
+num_workers: 2
+device: cuda
+gpu_id: 1
+
+sklearn:
+  classifier: logistic_regression
+  standardize_features: true
+  C: 1.0
+  penalty: l2
+  max_iter: 2000
+  class_weight: balanced
