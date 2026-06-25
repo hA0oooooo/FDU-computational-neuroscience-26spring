@@ -1,4 +1,5 @@
 import tarfile
+import csv
 from pathlib import Path
 
 import numpy as np
@@ -39,12 +40,31 @@ class SFCNInferenceDataset(Dataset):
 
 def locate_raw_root(path):
     path = Path(path).resolve()
+    if (path / "images").is_dir():
+        return path / "images"
     if any(path.glob("*.csv")):
         return path
     children = [p for p in path.iterdir() if p.is_dir()]
+    for child in children:
+        if (child / "images").is_dir():
+            return child / "images"
     if len(children) == 1 and any(children[0].glob("*.csv")):
         return children[0]
     return path
+
+
+def release_template_ids(input_path, dataset_name):
+    roots = []
+    path = Path(input_path)
+    if path.exists() and path.is_dir():
+        roots.append(path)
+    roots.append(PROJECT_ROOT / "dataset" / dataset_name)
+    for root in roots:
+        template = root / "UKB_submission_template.csv"
+        if template.exists():
+            with template.open("r", newline="") as f:
+                return [row["eid"] for row in csv.DictReader(f)]
+    return None
 
 
 def prepare_input_metadata(input_path, dataset_name):
@@ -145,9 +165,16 @@ def run_sfcn_eval(args, device):
 
     age_pred = predict_age(age_config_path, age_config, dataset, device)
     sex_pred = predict_sex(sex_config_path, sex_config, dataset, device, sex_classes)
-    rows = [{"ID": row["ID"], "Age": age_pred[row["ID"]], "Sex": sex_pred[row["ID"]]} for row in dataset.rows]
+    by_id = {row["ID"]: {"eid": row["ID"], "age": age_pred[row["ID"]], "sex": sex_pred[row["ID"]]} for row in dataset.rows}
+    template_ids = release_template_ids(args["dataset"], args["dataset_name"])
+    if template_ids is None:
+        rows = [by_id[case_id] for case_id in sorted(by_id)]
+    else:
+        missing = [case_id for case_id in template_ids if case_id not in by_id]
+        if missing:
+            raise RuntimeError(f"Missing predictions for template IDs: {missing}")
+        rows = [by_id[case_id] for case_id in template_ids if case_id in by_id]
 
-    output_dir = PROJECT_ROOT / "outputs" / args["dataset_name"]
-    pred_csv = output_dir / "pred.csv"
-    write_csv(pred_csv, sorted(rows, key=lambda row: row["ID"]), fieldnames=["ID", "Age", "Sex"])
+    pred_csv = PROJECT_ROOT / "outputs" / f"{args['dataset_name']}.csv"
+    write_csv(pred_csv, rows, fieldnames=["eid", "age", "sex"])
     print(f"Saved prediction CSV: {pred_csv.relative_to(PROJECT_ROOT)}")

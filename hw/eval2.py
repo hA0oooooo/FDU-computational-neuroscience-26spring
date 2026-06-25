@@ -4,6 +4,7 @@ import sys
 
 DEFAULT_GPU_ID = "0"
 DEFAULT_DEVICE = "cuda"
+DEFAULT_DATASET = "dataset/ADNI_test20_release"
 DEFAULT_CONFIG = "configs/rootstrap_adni_finetune_data_aug_seed3.yaml"
 
 
@@ -16,9 +17,12 @@ def dataset_name_from_path(path):
 
 
 def parse_args(argv):
-    if len(argv) != 2 or argv[0] != "--dataset":
-        raise SystemExit("Usage: python eval2.py --dataset dataset/TEST_DIR_OR_TAR")
-    dataset_path = argv[1]
+    if len(argv) == 0:
+        dataset_path = DEFAULT_DATASET
+    elif len(argv) == 2 and argv[0] == "--dataset":
+        dataset_path = argv[1]
+    else:
+        raise SystemExit("Usage: python eval2.py")
     return {
         "dataset": dataset_path,
         "dataset_name": dataset_name_from_path(dataset_path),
