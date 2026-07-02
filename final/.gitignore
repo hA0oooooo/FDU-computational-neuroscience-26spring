@@ -13,3 +13,6 @@ __pycache__/
 
 agent.md
 gpu_training_guide.md
+report.md
+template/
+report/
