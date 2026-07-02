@@ -1,11 +1,15 @@
 dataset/
 
 models/
-outputs/
 .ckpt
 .pth
+.pt
+.nii.gz
+predictions/
+weights/
 
 __pycache__/
 *.pyc
 
 agent.md
+gpu_training_guide.md

@@ -1,0 +1,84 @@
+experiment_name: shallow3d_2dunet_t1t2_seed42
+
+data:
+  root: dataset/cn_project_t1t2
+  manifest: dataset/cn_project_t1t2/paired_600_manifest.csv
+
+task:
+  direction: t1t2
+
+split:
+  mode: seed42
+  seed: 42
+  train_count: 480
+  val_count: 60
+  test_count: 60
+  csv: output/3dunet/smooth/t1tot2/split.csv
+
+normalization:
+  method: zscore
+  eps: 1e-8
+  recompute: false
+  cache_path: output/3dunet/smooth/t1tot2/weights/normalizer_seed42.json
+
+model:
+  family: 2dunet
+  name: Shallow3DEncoderUNet2D
+  in_channels: 7
+  out_channels: 1
+  base_channels: 48
+  transformer_layers: 1
+  transformer_heads: 8
+  transformer_dropout: 0.2
+  residual_dropout: 0.15
+
+slice:
+  num_input_slices: 7
+  slice_offsets: [-3, -2, -1, 0, 1, 2, 3]
+
+patch:
+  crop_size: [160, 160]
+  samples_per_case_per_epoch: 128
+  val_samples_per_case: 8
+  crop_foreground_prob: 0.6
+
+loss:
+  l1_weight: 1.0
+  ssim_weight: 0.4
+  grad_weight: 0.2
+  ssim_window: 7
+  ssim_data_range: 4.0
+
+training:
+  epochs: 100
+  batch_size: 256
+  val_batch_size: 256
+  num_workers: 16
+  data_cache_size: 16
+  prefetch_factor: 4
+  persistent_workers: true
+  drop_last: true
+  case_grouped_sampling: true
+  lr: 0.0001
+  weight_decay: 0.0001
+  amp: true
+  channels_last: false
+  grad_clip_norm: 1.0
+  save_every: 20
+  val_every: 1
+  fresh_start: true
+
+inference:
+  batch_size: 512
+  amp: true
+  clamp_minmax: true
+  pad_multiple: 16
+
+output:
+  root: output
+
+runtime:
+  seed: 42
+  device: cuda
+  gpu_ids: null
+  deterministic: false
